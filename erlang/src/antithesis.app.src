@@ -1,0 +1,11 @@
+{application, antithesis, [
+    {description, "The Antithesis SDK for Erlang and other BEAM languages"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [kernel, stdlib]},
+    {mod, {antithesis_app, []}},
+    {env, []},
+    {modules, []},
+    {licenses, ["MIT"]},
+    {links, [{"Antithesis", "https://antithesis.com/docs/"}]}
+]}.
