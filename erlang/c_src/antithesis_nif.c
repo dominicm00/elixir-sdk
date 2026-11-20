@@ -190,6 +190,26 @@ static coverage_module* module_for(ErlNifEnv* env, ERL_NIF_TERM key, size_t edge
     return found;
 }
 
+// Consume one hit if the lease has capacity and matches the generation read
+// below. On failure, return the last observed lease word in *observed.
+// Rechecking capacity on each CAS attempt prevents the decrement from borrowing
+// from the granted field.
+static bool lease_local_hit(uint64_t* slot, uint64_t* observed) {
+    uint64_t word = __atomic_load_n(slot, __ATOMIC_RELAXED);
+    while ((word & LEASE_FIELD_MASK) != 0) {
+        // Recheck revocation after each failed CAS.
+        uint64_t epoch = __atomic_load_n(voidstar.lease_generation, __ATOMIC_ACQUIRE) & LEASE_EPOCH_MASK;
+        if (((word >> LEASE_EPOCH_SHIFT) & LEASE_EPOCH_MASK) != epoch) {
+            break;
+        }
+        if (__atomic_compare_exchange_n(slot, &word, word - 1, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            return true;
+        }
+    }
+    *observed = word;
+    return false;
+}
+
 // hit(ModuleKey, EdgeCount, Edge), called by each instrumented coverage probe.
 static ERL_NIF_TERM hit(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     (void)argc;
@@ -216,18 +236,23 @@ static ERL_NIF_TERM hit(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
         return atom_ok;
     }
 
-    // Read the epoch on every hit so revoked leases are not reused.
-    uint64_t epoch = __atomic_load_n(voidstar.lease_generation, __ATOMIC_ACQUIRE) & LEASE_EPOCH_MASK;
-    uint64_t word = __atomic_load_n(slot, __ATOMIC_RELAXED);
-    while ((word & LEASE_FIELD_MASK) != 0 && ((word >> LEASE_EPOCH_SHIFT) & LEASE_EPOCH_MASK) == epoch) {
-        if (__atomic_compare_exchange_n(slot, &word, word - 1, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+    uint64_t word;
+    if (lease_local_hit(slot, &word)) {
+        return atom_ok;
+    }
+    // Clearing the lease claims its accumulated hits for one reporter,
+    // preventing duplicate reports. An empty slot has no accumulated hits.
+    while (!__atomic_compare_exchange_n(slot, &word, 0, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+        if (lease_local_hit(slot, &word)) {
             return atom_ok;
         }
     }
     uint64_t granted = (word >> LEASE_GRANTED_SHIFT) & LEASE_FIELD_MASK;
-    uint64_t remaining = word & LEASE_FIELD_MASK;
-    __atomic_store_n(slot, voidstar.notify_coverage_v2(edge + module->offset, granted - remaining),
-                     __ATOMIC_RELAXED);
+    uint64_t fresh = voidstar.notify_coverage_v2(edge + module->offset, granted - (word & LEASE_FIELD_MASK));
+    // Preserve any lease another thread installed: it may have accumulated hits.
+    // Discard this unused grant if the slot is occupied.
+    uint64_t empty = 0;
+    __atomic_compare_exchange_n(slot, &empty, fresh, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
     return atom_ok;
 }
 

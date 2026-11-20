@@ -1,6 +1,6 @@
 {application, antithesis, [
     {description, "The Antithesis SDK for Erlang and other BEAM languages"},
-    {vsn, "0.1.0"},
+    {vsn, "0.2.0"},
     {registered, []},
     {applications, [kernel, stdlib]},
     {mod, {antithesis_app, []}},

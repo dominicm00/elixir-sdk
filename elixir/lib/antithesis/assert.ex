@@ -7,12 +7,15 @@ defmodule Antithesis.Assert do
   at startup, including assertions that are never reached. Conditions use
   Elixir truthiness, as in `if`.
 
-  To disable assertions in a build, set this in its configuration:
+  Disable the SDK through compile-time configuration:
 
-      config :antithesis_elixir, assertions: false
+      config :antithesis_elixir, enabled: false
 
-  Disabled assertions return `:ok` without evaluating arguments or reporting
-  to the SDK. Changing the setting recompiles modules that use the macros.
+  Disabled builds omit the Erlang core and NIF. Assertion macros return `:ok`
+  without evaluating arguments. Raw assertion and guidance functions and
+  `Antithesis.Lifecycle` return `:ok`; `Antithesis.Random` uses `:rand`.
+  Changing this setting recompiles the SDK and macro callers. It cannot be
+  set in `config/runtime.exs`.
 
   Rich assertions report operands as guidance toward falsifying `always`
   assertions or satisfying `sometimes` assertions. Operands override matching
@@ -30,11 +33,15 @@ defmodule Antithesis.Assert do
 
   use Antithesis.FrontEnd
 
-  # The core loads this module before writing its header to identify Elixir.
-  @on_load :__antithesis_language__
-  @doc false
-  def __antithesis_language__ do
-    :antithesis_sdk.set_language("Elixir", "#{System.version()} (OTP #{:erlang.system_info(:otp_release)})")
+  @enabled Antithesis.FrontEnd.enabled?(__ENV__)
+
+  if @enabled do
+    # The core loads this module before writing its header to identify Elixir.
+    @on_load :__antithesis_language__
+    @doc false
+    def __antithesis_language__ do
+      :antithesis_sdk.set_language("Elixir", "#{System.version()} (OTP #{:erlang.system_info(:otp_release)})")
+    end
   end
 
   @doc """
@@ -91,7 +98,7 @@ defmodule Antithesis.Assert do
     do: rich(__CALLER__, :sometimes_all, named_bools(named_bools), message, details)
 
   defp hit(caller, condition, message, details, display_type) do
-    if enabled?(caller) do
+    if Antithesis.FrontEnd.enabled?(caller) do
       hit_call(caller, condition, message, details, display_type)
     else
       compiled_out(caller, message, [condition, details])
@@ -111,7 +118,7 @@ defmodule Antithesis.Assert do
   end
 
   defp rich(caller, kind, operands, message, details) do
-    if enabled?(caller) do
+    if Antithesis.FrontEnd.enabled?(caller) do
       rich_call(caller, kind, operands, message, details)
     else
       compiled_out(caller, message, [operands, details])
@@ -129,9 +136,6 @@ defmodule Antithesis.Assert do
       )
     end
   end
-
-  # Track the caller's config dependency so changes trigger recompilation.
-  defp enabled?(caller), do: Application.compile_env(caller, :antithesis_elixir, :assertions, true) != false
 
   # The unused fun prevents unused-variable warnings without evaluating
   # assertion arguments. The compiler removes it.
@@ -173,25 +177,9 @@ defmodule Antithesis.Assert do
   Passing `false` for `hit` declares the assertion without recording an
   evaluation. On hits, `guidance_data` overrides matching fields in `details`.
   """
-  def raw(
-        condition,
-        message,
-        details,
-        file,
-        function,
-        class,
-        begin_line,
-        begin_column,
-        hit,
-        must_hit,
-        assert_type,
-        display_type,
-        id,
-        guidance_data \\ nil
-      ),
-      do:
-        :antithesis_assert.raw(
-          truthy(condition),
+  if @enabled do
+    def raw(
+          condition,
           message,
           details,
           file,
@@ -204,18 +192,64 @@ defmodule Antithesis.Assert do
           assert_type,
           display_type,
           id,
-          guidance_data
-        )
+          guidance_data \\ nil
+        ),
+        do:
+          :antithesis_assert.raw(
+            truthy(condition),
+            message,
+            details,
+            file,
+            function,
+            class,
+            begin_line,
+            begin_column,
+            hit,
+            must_hit,
+            assert_type,
+            display_type,
+            id,
+            guidance_data
+          )
+  else
+    def raw(
+          _condition,
+          _message,
+          _details,
+          _file,
+          _function,
+          _class,
+          _begin_line,
+          _begin_column,
+          _hit,
+          _must_hit,
+          _assert_type,
+          _display_type,
+          _id,
+          _guidance_data \\ nil
+        ),
+        do: :ok
+  end
 
   @doc """
   On hits, reports `left` and `right` only when `left - right` improves the
   recorded extreme for `id`: larger if `maximize`, smaller otherwise.
   Passing `false` for `hit` declares the guidance point.
   """
-  defdelegate numeric_guidance_raw(left, right, message, maximize, file, function, class, begin_line, begin_column, hit, id),
-    to: :antithesis_assert
+  if @enabled do
+    defdelegate numeric_guidance_raw(left, right, message, maximize, file, function, class, begin_line, begin_column, hit, id),
+      to: :antithesis_assert
+  else
+    def numeric_guidance_raw(_left, _right, _message, _maximize, _file, _function, _class, _begin_line, _begin_column, _hit, _id),
+      do: :ok
+  end
 
   @doc "Reports `named_bools` on every hit; passing `false` for `hit` declares the guidance point."
-  defdelegate boolean_guidance_raw(named_bools, message, maximize, file, function, class, begin_line, begin_column, hit, id),
-    to: :antithesis_assert
+  if @enabled do
+    defdelegate boolean_guidance_raw(named_bools, message, maximize, file, function, class, begin_line, begin_column, hit, id),
+      to: :antithesis_assert
+  else
+    def boolean_guidance_raw(_named_bools, _message, _maximize, _file, _function, _class, _begin_line, _begin_column, _hit, _id),
+      do: :ok
+  end
 end

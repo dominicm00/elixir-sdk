@@ -2,11 +2,12 @@
 
 This library provides methods for BEAM languages (current Erlang/Elixir) to configure the Antithesis platform. These are namespaced into `Assert` for defining test properties, `Random` for Antithesis fuzzer input, and `Lifecycle` for controlling the Antithesis simulation.
 
-Assertions, lifecycle events, randomness and coverage instrumentation for
-Elixir and Erlang programs tested in Antithesis.
-
-Build requirements: Linux, Erlang/OTP 27 or later (including development
-headers), Elixir 1.18 or later, `make`, and a C compiler. 
+**Build requirements:**
+- Linux
+- Erlang/OTP 27 or later (including development headers)
+- Elixir 1.18 or later
+- `make`
+- A C compiler
 
 ## Elixir
 
@@ -16,7 +17,7 @@ From your application's root, extract the SDK archive:
 
 ```sh
 mkdir -p vendor/antithesis-beam-sdk
-tar -xzf antithesis-beam-sdk-0.1.0.tar.gz \
+tar -xzf antithesis-beam-sdk-0.2.0.tar.gz \
   -C vendor/antithesis-beam-sdk --strip-components=1
 ```
 
@@ -120,12 +121,42 @@ COPY --from=build /app/_build/prod/antithesis/symbols /symbols
 CMD ["/app/bin/my_app", "start"]
 ```
 
-### Optional: disable assertions outside Antithesis
+### 6. Disable the SDK outside Antithesis
 
-To completely compile out assertions for non-Antithesis builds, add the following configuration:
+Set `enabled: false` in your compile-time configuration (for example, in `config/prod.exs` if your `config/config.exs` imports it):
 
 ```elixir
-config :antithesis_elixir, assertions: false
+config :antithesis_elixir, enabled: false
 ```
 
-Disabled assertions return `:ok` without evaluating their arguments. Note this can cause unused variable warnings if you have a variable only used for an assertion.
+Disabled builds:
+
+- Do not compile or release the Erlang core & NIF
+- Do not run any SDK setup code at runtime
+- Compile assertion macros to `:ok` without evaluating their arguments
+- Return `:ok` from `Antithesis.Lifecycle` functions
+- Draw `Antithesis.Random` values from `:rand`
+
+**NOTE:** `mix antithesis.instrument` rewrites compiled application and dependency modules in place. When you switch to `enabled: false`, Mix can reuse modules that still call the NIF, causing the application to fail at startup.
+
+You MUST either:
+
+**Use a separate build path:**
+
+```sh
+(
+  # Or have a build path just for antithesis builds!
+  export MIX_ENV=prod MIX_BUILD_PATH="$PWD/_build/prod-no-antithesis"
+  mix deps.get && mix release
+)
+```
+
+**Perform a clean build after instrumentation:**
+
+```sh
+(
+  export MIX_ENV=prod
+  rm -r _build/prod
+  mix deps.get && mix release
+)
+```

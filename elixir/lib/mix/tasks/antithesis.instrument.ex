@@ -28,54 +28,60 @@ defmodule Mix.Tasks.Antithesis.Instrument do
   use Mix.Task
   use Antithesis.FrontEnd
 
-  @switches [symbols: :string, name: :string, skip_dependencies: :boolean, compile: :boolean]
-  # SDK probes would recurse into the SDK; exclude its applications.
-  @sdk [:antithesis, :antithesis_elixir]
+  if Antithesis.FrontEnd.enabled?(__ENV__) do
+    @switches [symbols: :string, name: :string, skip_dependencies: :boolean, compile: :boolean]
+    # SDK probes would recurse into the SDK; exclude its applications.
+    @sdk [:antithesis, :antithesis_elixir]
 
-  @impl true
-  def run(args) do
-    {opts, _} = OptionParser.parse!(args, strict: @switches)
-    Mix.Task.run(if(Keyword.get(opts, :compile, true), do: "compile", else: "loadpaths"), [])
+    @impl true
+    def run(args) do
+      {opts, _} = OptionParser.parse!(args, strict: @switches)
+      Mix.Task.run(if(Keyword.get(opts, :compile, true), do: "compile", else: "loadpaths"), [])
 
-    build = Mix.Project.build_path()
-    deps = if opts[:skip_dependencies], do: [], else: dependency_apps()
-    apps = (project_apps() ++ deps) |> Enum.uniq() |> Enum.sort() |> Enum.reject(&(&1 in @sdk))
-    dirs = for app <- apps, do: Path.join([build, "lib", to_string(app), "ebin"])
+      build = Mix.Project.build_path()
+      deps = if opts[:skip_dependencies], do: [], else: dependency_apps()
+      apps = (project_apps() ++ deps) |> Enum.uniq() |> Enum.sort() |> Enum.reject(&(&1 in @sdk))
+      dirs = for app <- apps, do: Path.join([build, "lib", to_string(app), "ebin"])
 
-    case Enum.reject(dirs, &File.dir?/1) do
-      [] -> :ok
-      missing -> Mix.raise("antithesis: not compiled: #{Enum.join(missing, ", ")}")
+      case Enum.reject(dirs, &File.dir?/1) do
+        [] -> :ok
+        missing -> Mix.raise("antithesis: not compiled: #{Enum.join(missing, ", ")}")
+      end
+
+      symbols = Path.expand(opts[:symbols] || Path.join(build, "antithesis/symbols"))
+      name = opts[:name] || default_name()
+
+      case :antithesis_instrument.instrument(Enum.map(dirs, &String.to_charlist/1), %{
+             symbols: String.to_charlist(symbols),
+             name: String.to_charlist(name)
+           }) do
+        {:ok, :none, 0} ->
+          Mix.shell().info("antithesis: nothing to instrument; every module already is")
+
+        {:ok, key, count} ->
+          Mix.shell().info("antithesis: instrumented #{count} edges; symbol table #{Path.join(symbols, key)}.sym.tsv")
+
+        {:error, reason} ->
+          Mix.raise("antithesis: #{IO.chardata_to_string(reason)}")
+      end
     end
 
-    symbols = Path.expand(opts[:symbols] || Path.join(build, "antithesis/symbols"))
-    name = opts[:name] || default_name()
-
-    case :antithesis_instrument.instrument(Enum.map(dirs, &String.to_charlist/1), %{
-           symbols: String.to_charlist(symbols),
-           name: String.to_charlist(name)
-         }) do
-      {:ok, :none, 0} ->
-        Mix.shell().info("antithesis: nothing to instrument; every module already is")
-
-      {:ok, key, count} ->
-        Mix.shell().info("antithesis: instrumented #{count} edges; symbol table #{Path.join(symbols, key)}.sym.tsv")
-
-      {:error, reason} ->
-        Mix.raise("antithesis: #{IO.chardata_to_string(reason)}")
+    defp project_apps do
+      if Mix.Project.umbrella?(),
+        do: Mix.Project.apps_paths() |> Map.keys() |> Enum.sort(),
+        else: [Mix.Project.config()[:app]]
     end
-  end
 
-  defp project_apps do
-    if Mix.Project.umbrella?(),
-      do: Mix.Project.apps_paths() |> Map.keys() |> Enum.sort(),
-      else: [Mix.Project.config()[:app]]
-  end
+    defp dependency_apps do
+      for dep <- Mix.Dep.cached(), dep.opts[:app] != false, do: dep.app
+    end
 
-  defp dependency_apps do
-    for dep <- Mix.Dep.cached(), dep.opts[:app] != false, do: dep.app
-  end
-
-  defp default_name do
-    if Mix.Project.umbrella?(), do: Path.basename(File.cwd!()), else: to_string(Mix.Project.config()[:app])
+    defp default_name do
+      if Mix.Project.umbrella?(), do: Path.basename(File.cwd!()), else: to_string(Mix.Project.config()[:app])
+    end
+  else
+    @impl true
+    def run(_args),
+      do: Mix.raise("antithesis: the SDK is disabled by config :antithesis_elixir, enabled: false")
   end
 end
